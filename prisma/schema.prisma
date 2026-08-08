@@ -1,0 +1,291 @@
+// ============================================================================
+// Prisma Schema - Discord Security Bot
+//
+// Wichtig: Der Bot ist MULTI-TENANT (öffentlicher Bot auf vielen Servern).
+// Praktisch JEDE Tabelle ist daher über "guildId" partitioniert.
+// Es gibt niemals globale Einstellungen, die für alle Server gelten -
+// jede Config, jeder Log-Eintrag, jeder Whitelist-Eintrag gehört zu genau
+// einer Guild.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Basis-Konfiguration pro Guild
+// ----------------------------------------------------------------------------
+model GuildConfig {
+  guildId           String   @id
+  logChannelId      String? // zentraler Security-Log-Channel
+  incidentCategoryId String? // Kategorie, in der bei Lockdown der inc-Channel erstellt wird
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  antiNukeConfig    AntiNukeConfig?
+  antiNukeThresholds AntiNukeThreshold[]
+  autoModRules      AutoModRule[]
+  whitelistEntries  AutoModWhitelist[]
+  lockdownState     LockdownState?
+  lockdownSnapshots LockdownSnapshot[]
+  securityLogs      SecurityLog[]
+  punishmentLogs    PunishmentLog[]
+  adminRoles        GuildAdminRole[]
+
+  @@map("guild_configs")
+}
+
+/// Rollen, deren Mitglieder (zusätzlich zu echten Discord-"Administrator"-
+/// Berechtigten und dem Server-Owner) die Bot-Verwaltungs-Commands nutzen
+/// dürfen (AutoMod/Anti-Nuke/Config/Dashboard - NICHT Lockdown, siehe
+/// permissions.ts). Verwaltet über /permissions, das selbst hart an die
+/// echte Discord "Administrator"-Berechtigung gebunden ist, damit dieses
+/// System nicht von sich selbst aus erweitert werden kann.
+model GuildAdminRole {
+  id        String      @id @default(cuid())
+  guildId   String
+  guild     GuildConfig @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+  roleId    String
+  createdAt DateTime    @default(now())
+
+  @@unique([guildId, roleId])
+  @@map("guild_admin_roles")
+}
+
+// ----------------------------------------------------------------------------
+// ANTI-NUKE
+// ----------------------------------------------------------------------------
+
+enum NukeActionType {
+  CHANNEL_DELETE
+  CHANNEL_CREATE
+  ROLE_DELETE
+  ROLE_CREATE
+  ROLE_UPDATE
+  CHANNEL_UPDATE
+  PERMISSION_UPDATE
+  WEBHOOK_CREATE
+  EMOJI_DELETE
+  STICKER_DELETE
+  MEMBER_BAN
+  MEMBER_KICK
+}
+
+enum PunishmentAction {
+  NONE
+  KICK
+  BAN
+}
+
+/// Globale Anti-Nuke Einstellungen einer Guild (z.B. Standard-Gegenmaßnahme, Alarm-Channel)
+model AntiNukeConfig {
+  guildId            String           @id
+  guild              GuildConfig      @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+  enabled            Boolean          @default(true)
+  alertChannelId     String?
+  defaultPunishment  PunishmentAction @default(KICK)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@map("anti_nuke_configs")
+}
+
+/// Pro Aktionstyp konfigurierbarer Schwellenwert innerhalb eines Zeitfensters.
+/// Beispiel: maxCount=3, windowSeconds=10 -> 3 Channel-Löschungen in 10s lösen aus.
+model AntiNukeThreshold {
+  id             String           @id @default(cuid())
+  guildId        String
+  guild          GuildConfig      @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+  actionType     NukeActionType
+  enabled        Boolean          @default(true)
+  maxCount       Int              @default(3)
+  windowSeconds  Int              @default(5)
+  punishment     PunishmentAction? // überschreibt defaultPunishment, wenn gesetzt
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@unique([guildId, actionType])
+  @@map("anti_nuke_thresholds")
+}
+
+// ----------------------------------------------------------------------------
+// AUTOMOD
+// ----------------------------------------------------------------------------
+
+enum AutoModRuleType {
+  SPAM
+  DUPLICATE_SPAM
+  CAPS_SPAM
+  EMOJI_SPAM
+  MENTION_SPAM
+  INVITE_LINKS
+  SCAM_LINKS
+  ADVERTISING
+  NSFW
+  INSULTS
+  DISCRIMINATION
+  PROFANITY
+  UNAUTHORIZED_LINKS
+  TOKEN_LEAK
+}
+
+enum AutoModActionType {
+  DELETE_MESSAGE
+  WARN
+  TIMEOUT
+  PERMANENT_TIMEOUT
+  KICK
+  BAN
+}
+
+/// Eine AutoMod-Regel pro Guild und Typ. Enthält eigene Schwellenwerte,
+/// Ausnahmen (Rollen/Channels) sowie eine Eskalationsleiter (Strafstufen).
+model AutoModRule {
+  id             String            @id @default(cuid())
+  guildId        String
+  guild          GuildConfig       @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+  type           AutoModRuleType
+  enabled        Boolean           @default(true)
+
+  // Schwellenwerte (nicht jeder Typ nutzt jedes Feld, siehe RuleEngine)
+  maxCount       Int?              // z.B. Anzahl Nachrichten/Erwähnungen/Emojis
+  windowSeconds  Int?              // Zeitfenster für maxCount
+  maxPercentage  Int?              // z.B. Caps-Anteil in %
+
+  exemptRoleIds    String[]        @default([])
+  exemptChannelIds String[]        @default([])
+
+  // Eskalationsleiter: JSON-Array von { violationNumber, action, durationSeconds? }
+  escalation     Json              @default("[]")
+
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([guildId, type])
+  @@map("automod_rules")
+}
+
+enum WhitelistTargetType {
+  USER
+  ROLE
+}
+
+/// Whitelist gilt AUSSCHLIESSLICH für AutoMod, niemals für Anti-Nuke.
+model AutoModWhitelist {
+  id         String              @id @default(cuid())
+  guildId    String
+  guild      GuildConfig         @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+  targetId   String
+  targetType WhitelistTargetType
+  reason     String?
+  createdAt  DateTime            @default(now())
+
+  @@unique([guildId, targetId, targetType])
+  @@map("automod_whitelist")
+}
+
+/// Zähler für Verstöße pro Nutzer und Regel, um die Eskalationsleiter zu steuern.
+model AutoModViolation {
+  id        String   @id @default(cuid())
+  guildId   String
+  userId    String
+  ruleType  AutoModRuleType
+  count     Int      @default(1)
+  updatedAt DateTime @updatedAt
+
+  @@unique([guildId, userId, ruleType])
+  @@map("automod_violations")
+}
+
+// ----------------------------------------------------------------------------
+// LOCKDOWN
+// ----------------------------------------------------------------------------
+
+enum LockdownLevel {
+  LEVEL1
+  LEVEL2
+}
+
+/// Aktueller Lockdown-Status einer Guild (max. 1 aktiver Lockdown pro Guild).
+model LockdownState {
+  guildId           String        @id
+  guild             GuildConfig   @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+  active            Boolean       @default(false)
+  level             LockdownLevel?
+  reason            String?
+  activatedById     String?
+  activatedAt       DateTime?
+  incidentChannelId String?
+
+  @@map("lockdown_states")
+}
+
+/// Snapshot ALLER Permission-Overwrites eines Channels vor dem Lockdown,
+/// damit sie beim Aufheben exakt 1:1 wiederhergestellt werden können.
+model LockdownSnapshot {
+  id         String   @id @default(cuid())
+  guildId    String
+  guild      GuildConfig @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+  lockdownRunId String  // gruppiert alle Snapshots eines einzelnen Lockdown-Vorgangs
+  channelId  String
+  channelType Int
+  // Vollständiges Abbild der PermissionOverwrites: [{id, type, allow, deny}]
+  overwrites Json
+  createdAt  DateTime @default(now())
+
+  @@unique([guildId, lockdownRunId, channelId])
+  @@index([guildId, lockdownRunId])
+  @@map("lockdown_snapshots")
+}
+
+// ----------------------------------------------------------------------------
+// LOGGING
+// ----------------------------------------------------------------------------
+
+enum SecurityLogType {
+  NUKE_DETECTED
+  AUTOMOD_ACTION
+  LOCKDOWN_ACTIVATED
+  LOCKDOWN_DEACTIVATED
+  MEMBER_BANNED
+  MEMBER_KICKED
+  MEMBER_TIMEOUT
+  MESSAGE_DELETED
+}
+
+model SecurityLog {
+  id        String          @id @default(cuid())
+  guildId   String
+  guild     GuildConfig     @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+  type      SecurityLogType
+  actorId   String?         // wer hat die Aktion ausgelöst (Angreifer / Nutzer / Bot)
+  targetId  String?         // wer/was betroffen war
+  data      Json            @default("{}")
+  createdAt DateTime        @default(now())
+
+  @@index([guildId, createdAt])
+  @@map("security_logs")
+}
+
+/// Separates, leichtgewichtiges Protokoll aller vom Bot ausgeführten Strafen
+/// (Kicks/Bans/Timeouts), unabhängig davon ob durch AutoMod oder Anti-Nuke ausgelöst.
+model PunishmentLog {
+  id         String   @id @default(cuid())
+  guildId    String
+  guild      GuildConfig @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+  userId     String
+  moderatorId String  // Bot-User-ID oder "SYSTEM"
+  action     AutoModActionType
+  reason     String
+  source     String   // "ANTI_NUKE" | "AUTOMOD" | "MANUAL"
+  durationSeconds Int?
+  createdAt  DateTime @default(now())
+
+  @@index([guildId, userId])
+  @@map("punishment_logs")
+}
