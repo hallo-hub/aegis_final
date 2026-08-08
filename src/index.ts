@@ -1,10 +1,24 @@
 import "dotenv/config";
+import express from "express"; // Import für den Render-Webserver hinzugefügt
 import { SecurityClient } from "./structures/SecurityClient";
 import { loadCommands } from "./handlers/commandHandler";
 import { loadEvents } from "./handlers/eventHandler";
 import logger from "./utils/logger";
 
 async function main(): Promise<void> {
+  // --- RENDER WEBSERVER START ---
+  const app = express();
+  const port = process.env.PORT || 10000;
+  
+  app.get("/", (_req, res) => {
+    res.send("Aegis Security Bot ist online und das Dashboard ist aktiv!");
+  });
+  
+  app.listen(port, () => {
+    logger.info(`Webserver für Render läuft erfolgreich auf Port ${port}`);
+  });
+  // --- RENDER WEBSERVER ENDE ---
+
   const token = process.env.DISCORD_TOKEN;
   if (!token) {
     throw new Error("DISCORD_TOKEN fehlt in der .env Datei.");
