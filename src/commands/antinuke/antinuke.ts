@@ -38,7 +38,7 @@ export const command: Command = {
         .addStringOption((opt) =>
           opt
             .setName("gegenmassnahme")
-            .setDescription("Gegenmaßnahme NUR für diesen Aktionstyp (überschreibt den globalen Standard aus /antinuke punishment)")
+            .setDescription("Gegenmaßnahme NUR für diesen Aktionstyp (überschreibt den globalen Standard)")
             .addChoices({ name: "Kick", value: "KICK" }, { name: "Bann", value: "BAN" }, { name: "Keine Aktion", value: "NONE" })
         )
     )
