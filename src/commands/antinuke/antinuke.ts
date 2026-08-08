@@ -45,7 +45,7 @@ export const command: Command = {
     .addSubcommand((sub) =>
       sub
         .setName("reset")
-        .setDescription("Schwellenwert für einen Aktionstyp zurück auf Standard (3 Aktionen/5s, Rolle bearbeiten: 5/5s) setzen")
+        .setDescription("Setzt den Schwellenwert eines Aktionstyps zurück auf den Standardwert")
         .addStringOption((opt) => opt.setName("aktion").setDescription("Aktionstyp").setRequired(true).addChoices(...ACTION_CHOICES))
     )
     .addSubcommand((sub) =>
